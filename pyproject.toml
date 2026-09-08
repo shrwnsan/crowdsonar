@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "crowdsonar"
+version = "0.1.0"
+description = "Self-hosted social signal synthesis engine — ingest, classify, and synthesize community chatter into actionable briefings."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["social-listening", "reddit", "signal-intelligence", "briefings", "self-hosted"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Chat",
+    "Topic :: Office/Business :: News/Diary",
+]
+dependencies = [
+    "praw>=8.0",
+    "duckdb>=1.5",
+    "pyarrow>=25.0",
+    "httpx>=0.28",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+crowdsonar = "crowdsonar.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/crowdsonar"]

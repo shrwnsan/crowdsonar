@@ -1,0 +1,55 @@
+# CrowdSonar — Example Topic Config
+# Each YAML file defines one topic to monitor.
+# Place in configs/ (or src/crowdsonar/configs/) and run: crowdsonar --topic example
+
+name: example
+description: "Demo topic — pain points and feature requests around incident monitoring and on-call tooling"
+
+sources:
+  reddit:
+    subreddits:
+      - devops
+      - sysadmin
+      - sre
+    keywords:
+      - monitoring
+      - on-call
+      - pager
+      - alert fatigue
+      - observability
+      - uptime
+    sort: new
+    time_filter: week
+    post_limit: 50
+    comments_per_post: 20
+    backfill_days: 365  # applied only with --backfill (one-off deep backfill)
+
+# Classification taxonomy
+signal_types:
+  - pain_point
+  - feature_request
+  - competitor_complaint
+  - validation
+  - anti_pattern
+  - market_gap
+  - decision_signal
+  - noise
+
+sentiment_values:
+  - positive
+  - negative
+  - neutral
+  - mixed
+
+strength_values:
+  - casual
+  - interested
+  - committed
+  - advocate
+
+# Synthesis config
+synthesis:
+  top_signals: 10
+  cluster_threshold: 3
+  include_subreddits: true
+  time_range_label: "past week"

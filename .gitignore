@@ -1,0 +1,14 @@
+# Secrets & credentials — never commit
+.env
+*.key
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Data — platform-derived content stays local
+data/
+
+# OS noise
+.DS_Store
