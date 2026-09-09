@@ -80,7 +80,12 @@ def classify_batch(
                         {"role": "user", "content": user_msg},
                     ],
                     "temperature": 0.1,
-                    "max_tokens": 4096,
+                    # gpt-4o-mini: thinking can't be disabled; effort defaults
+                    # to max, whose reasoning tokens count inside max_tokens and
+                    # can starve content (empty/truncated JSON). Pin explicitly.
+                    "reasoning_effort": "low",
+                    "thinking": {"type": "enabled"},
+                    "max_tokens": 8192,
                 },
                 timeout=120,
             )

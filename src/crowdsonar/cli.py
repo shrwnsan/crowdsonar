@@ -27,7 +27,11 @@ from crowdsonar.ingest import (
 )
 from crowdsonar.arctic_shift import ingest_arctic
 from crowdsonar.classify import classify_batch
-from crowdsonar.storage import save_signals, query_signals
+from crowdsonar.storage import (
+    save_signals,
+    save_raw_posts,
+    pending_classifications,
+)
 from crowdsonar.synthesize import synthesize_briefing
 
 logging.basicConfig(
@@ -38,11 +42,32 @@ logging.basicConfig(
 log = logging.getLogger("crowdsonar")
 
 
+def _raw_row_to_post(row: dict) -> RawPost:
+    """Convert a raw-store row dict back into a RawPost for classification."""
+    return RawPost(
+        source=row["source"],
+        post_id=row["post_id"],
+        post_title=row["post_title"],
+        post_url=row["post_url"],
+        post_subreddit=row["post_subreddit"],
+        post_author=row["post_author"],
+        post_score=row["post_score"],
+        post_created_utc=row["post_created_utc"],
+        post_body=row["post_body"],
+        comment_id=row["comment_id"],
+        comment_body=row["comment_body"],
+        comment_author=row["comment_author"],
+        comment_score=row["comment_score"],
+        comment_created_utc=row["comment_created_utc"],
+        keyword_match=row["keyword_match"],
+    )
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="CrowdSonar — social signal synthesis engine")
     p.add_argument("--topic", "-t", help="Topic config name (from configs/)")
     p.add_argument("--list", "-l", action="store_true", help="List available topics")
-    p.add_argument("--dry-run", action="store_true", help="Ingest only, skip classification and synthesis")
+    p.add_argument("--dry-run", action="store_true", help="Ingest and persist the raw store, skip all LLM calls")
     p.add_argument("--source", choices=["auto", "arctic", "praw"], default="auto",
                    help="Ingestion source: arctic = Arctic Shift API (credential-free, "
                         "default); praw = Reddit OAuth only; auto = arctic + PRAW overlay "
@@ -50,7 +75,7 @@ def parse_args():
     p.add_argument("--backfill", action="store_true",
                    help="Widen the ingest window to backfill_days from the topic config "
                         "(one-off deep backfill; default window is time_filter)")
-    p.add_argument("--classify-only", action="store_true", help="Only run classification on stored data")
+    p.add_argument("--classify-only", action="store_true", help="Classify the pending raw/classified delta via LLM, append to signals (idempotent)")
     p.add_argument("--synthesize-only", action="store_true", help="Only generate briefing from classified data")
     p.add_argument("--model", default="gpt-4o-mini", help="LLM model for classification")
     p.add_argument("--synth-model", default=None, help="LLM model for synthesis (default: same as --model)")
@@ -85,6 +110,7 @@ def main():
 
     # ── Phase 1: Ingest ──
     all_posts: list[RawPost] = []
+    pending: list[dict] = []  # raw/classified delta; computed in Phase 1 or --classify-only
 
     if not args.synthesize_only and not args.classify_only:
         backfill_days = reddit_cfg.get("backfill_days", 0) if args.backfill else 0
@@ -147,8 +173,19 @@ def main():
 
         log.info("Ingest complete: %d unique items", len(all_posts))
 
-        if args.dry_run or not all_posts:
-            print(f"\n[DRY RUN] Would process {len(all_posts)} items from {len(reddit_cfg['subreddits'])} subreddits")
+        # Persist raw BEFORE any LLM call (raw store) —
+        # banks the fetch even when we stop here (dry-run / empty window).
+        raw_path, new_raw = save_raw_posts(all_posts, topic_name, run_id)
+        log.info("Raw store: %d new rows -> %s", new_raw, raw_path)
+
+        # Classification operates on the raw/classified delta — idempotent
+        # across re-ingest and crash-resume (raw persists pre-LLM).
+        pending = pending_classifications(topic_name)
+
+        if args.dry_run:
+            print(f"\n[DRY RUN] {len(all_posts)} items ingested from {len(reddit_cfg['subreddits'])} subreddits; "
+                  f"{new_raw} new raw rows persisted to {raw_path}.")
+            print(f"Pending classification delta: {len(pending)} item(s). No LLM calls made.")
             for p in all_posts[:5]:
                 label = "comment" if p.comment_id else "post"
                 print(f"  [{label}] r/{p.post_subreddit} ({p.keyword_match}) score={p.post_score} — {p.post_title[:80]}")
@@ -156,38 +193,49 @@ def main():
                 print(f"  ... and {len(all_posts) - 5} more")
             return
 
+        if not all_posts:
+            print(f"\nNo new items ingested this run (raw store: {raw_path}); "
+                  f"{len(pending)} pending item(s) in the classification delta.")
+            # fall through to Phase 2 — the delta may hold crash-resume work
+
     # ── Phase 2: Classify ──
     if not args.synthesize_only:
         if args.classify_only:
-            # Load from last parquet — but we need raw posts for classification
-            # For classify-only, we'd need raw data stored separately
-            log.error("--classify-only requires stored raw posts (not yet implemented)")
-            log.error("Run a full pipeline first, or use --dry-run to inspect ingestion.")
-            sys.exit(1)
+            # Skip ingest; operate purely on the raw/classified delta.
+            pending = pending_classifications(topic_name)
+            if not pending:
+                print(f"\n--classify-only: 0 pending — raw store for '{topic_name}' is fully classified.")
+                return
+            print(f"--classify-only: {len(pending)} pending item(s) in the raw/classified delta")
 
-        log.info("Phase 2: Classifying %d items via %s", len(all_posts), args.model)
-        classifications = classify_batch(all_posts, model=args.model)
+        all_posts = [_raw_row_to_post(r) for r in pending]
 
-        # Save to Parquet
-        from crowdsonar.storage import _row_dict
-        rows = []
-        for raw, cls in zip(all_posts, classifications):
-            rows.append(_row_dict(raw, cls, run_id, topic_name))
+        if all_posts:
+            log.info("Phase 2: Classifying %d items via %s", len(all_posts), args.model)
+            classifications = classify_batch(all_posts, model=args.model)
 
-        path = save_signals(rows, topic_name, run_id)
-        print(f"\nSaved {len(rows)} classified signals to {path}")
+            # Save to Parquet
+            from crowdsonar.storage import _row_dict
+            rows = []
+            for raw, cls in zip(all_posts, classifications):
+                rows.append(_row_dict(raw, cls, run_id, topic_name))
 
-        # Quick summary
-        type_counts = {}
-        for r in rows:
-            t = r["signal_type"]
-            type_counts[t] = type_counts.get(t, 0) + 1
-        print("Signal breakdown:")
-        for t, c in sorted(type_counts.items(), key=lambda x: -x[1]):
-            print(f"  {t}: {c}")
+            path = save_signals(rows, topic_name, run_id)
+            print(f"\nSaved {len(rows)} classified signals to {path}")
+
+            # Quick summary
+            type_counts = {}
+            for r in rows:
+                t = r["signal_type"]
+                type_counts[t] = type_counts.get(t, 0) + 1
+            print("Signal breakdown:")
+            for t, c in sorted(type_counts.items(), key=lambda x: -x[1]):
+                print(f"  {t}: {c}")
+        else:
+            log.info("Phase 2: classification delta is empty — nothing to classify")
 
     # ── Phase 3: Synthesize ──
-    if not args.dry_run:
+    if not args.dry_run and not args.classify_only:
         synth_model = args.synth_model or args.model
         log.info("Phase 3: Synthesizing briefing via %s", synth_model)
         briefing = synthesize_briefing(

@@ -1,7 +1,13 @@
 """Arctic Shift API adapter — credential-free Reddit ingestion (primary source).
 
-Replaces PullPush (dead 2026-09) as the default ingestion path. No OAuth, no
-API key. See docs/architecture.md §2 for the source-selection rationale.
+Replaces PullPush (dead 2026-09) as the default ingestion path. Source-selection
+rationale, in brief: PullPush's API went dark in September 2026; the official
+Reddit API was a poor fit for research-scale reads (paid tier, per-request
+costs, and 2026-09 policy shifts that killed several projects in this niche);
+Arctic Shift is a volunteer-run public archive with a free, key-less JSON API
+covering full Reddit history. Cost of the trade-off: single-operator
+availability risk — mitigated by per-run local snapshots and a pluggable
+source layer (PRAW overlay retained, HN/RSS adapters planned).
 
 Strategy: fetch the full post window per subreddit (server-side time filter,
 paginated), then filter by keywords locally using the same `_matches_keywords`

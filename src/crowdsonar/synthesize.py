@@ -87,7 +87,11 @@ def synthesize_briefing(
                     {"role": "user", "content": user_msg},
                 ],
                 "temperature": 0.3,
-                "max_tokens": 2048,
+                # gpt-4o-mini: reasoning tokens count inside max_tokens —
+                # keep effort pinned (high) and budget generous.
+                "reasoning_effort": "high",
+                "thinking": {"type": "enabled"},
+                "max_tokens": 4096,
             },
             timeout=120,
         )

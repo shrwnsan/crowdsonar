@@ -1,8 +1,10 @@
 """Reddit ingestion — PRAW real-time overlay.
 
 Primary source is the Arctic Shift API (src/crowdsonar/arctic_shift.py):
-credential-free, no OAuth. PullPush was removed 2026-09 (API dead);
-docs/architecture.md records the rationale.
+credential-free, no OAuth. PullPush's API went dark in September 2026 and the
+official Reddit API is a paid tier — so the research path runs on a public
+archive, with PRAW kept as an optional real-time overlay for operators who
+hold Reddit credentials.
 """
 
 import logging
