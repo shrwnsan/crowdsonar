@@ -50,6 +50,7 @@ def synthesize_briefing(
             "signal_type": s["signal_type"],
             "sentiment": s["sentiment"],
             "strength": s["strength"],
+            "confirmation_status": s.get("confirmation_status", "self_announced"),
             "entities": s["entities"],
             "summary": s["summary"],
             "subreddit": s["post_subreddit"],
@@ -87,16 +88,22 @@ def synthesize_briefing(
                     {"role": "user", "content": user_msg},
                 ],
                 "temperature": 0.3,
-                # gpt-4o-mini: reasoning tokens count inside max_tokens —
-                # keep effort pinned (high) and budget generous.
+                # Some OpenAI-compatible backends spend reasoning tokens
+                # inside max_tokens — budget generously or content starves.
                 "reasoning_effort": "high",
                 "thinking": {"type": "enabled"},
-                "max_tokens": 4096,
+                "max_tokens": 16384,
             },
             timeout=120,
         )
         resp.raise_for_status()
         briefing = resp.json()["choices"][0]["message"]["content"].strip()
+        if not briefing:
+            # Empty content = backend produced no visible output (e.g. reasoning
+            # tokens consumed the token budget). Never return "" — a silent
+            # empty briefing gets persisted as a 0-byte file and renders as a
+            # body-less digest.
+            return "⚠️ Synthesis returned empty content — raise the token budget or lower reasoning_effort."
         return briefing
 
     except Exception as e:

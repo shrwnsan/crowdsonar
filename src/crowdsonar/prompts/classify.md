@@ -35,6 +35,12 @@ You receive a batch of Reddit posts/comments. Each has:
 - `committed`: detailed comparison, sharing financials, ready to act
 - `advocate`: strong opinion, personal experience, high engagement
 
+### confirmation_status (pick exactly one)
+How corroborated is the claim/experience in this item?
+- `rumor`: unverified claim, hearsay, secondhand ("I heard that…"), no evidence offered
+- `self_announced`: firsthand account from the person involved (their own experience, their own announcement) — not independently verified
+- `officially_confirmed`: corroborated by an official or independent source — company statement, filing, press coverage, documentation, or multiple independent firsthand accounts
+
 ### entities (list of strings)
 Extract specific entity names mentioned: brand names, product names, dollar amounts, industries, locations. Only extract concrete nouns, not generic terms.
 
@@ -50,6 +56,7 @@ Return a JSON array with one object per input item. Each object:
   "signal_type": "pain_point",
   "sentiment": "negative",
   "strength": "committed",
+  "confirmation_status": "self_announced",
   "entities": ["Acme Monitoring", "$50K"],
   "summary": "SRE lead describes burning $50K/year on a monitoring stack the team ignores because alert fatigue has set in."
 }

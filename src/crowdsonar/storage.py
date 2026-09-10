@@ -43,6 +43,7 @@ def _signals_schema() -> pa.Schema:
         ("signal_type", pa.string()),
         ("sentiment", pa.string()),
         ("strength", pa.string()),
+        ("confirmation_status", pa.string()),  # rumor / self_announced / officially_confirmed
         ("entities", pa.string()),       # JSON list
         ("summary", pa.string()),        # one-line LLM summary
         ("classified_at", pa.string()),  # ISO timestamp
@@ -98,6 +99,7 @@ def _row_dict(raw, classification: dict, run_id: str, topic: str) -> dict:
         "signal_type": classification.get("signal_type", "noise"),
         "sentiment": classification.get("sentiment", "neutral"),
         "strength": classification.get("strength", "casual"),
+        "confirmation_status": classification.get("confirmation_status", "self_announced"),
         "entities": json.dumps(classification.get("entities", [])),
         "summary": classification.get("summary", ""),
         "classified_at": datetime.now(timezone.utc).isoformat(),
@@ -139,7 +141,7 @@ def query_signals(
 
     pattern = str(SIGNALS_DIR / "*.parquet")
     try:
-        con.execute(f"CREATE VIEW signals AS SELECT * FROM read_parquet('{pattern}')")
+        con.execute(f"CREATE VIEW signals AS SELECT * FROM read_parquet('{pattern}', union_by_name=true)")
     except Exception:
         log.warning("No parquet files found in %s", SIGNALS_DIR)
         return []
@@ -189,7 +191,7 @@ def get_signal_counts(topic: str) -> dict:
     con = duckdb.connect(":memory:")
     pattern = str(SIGNALS_DIR / f"{topic}_*.parquet")
     try:
-        con.execute(f"CREATE VIEW signals AS SELECT * FROM read_parquet('{pattern}')")
+        con.execute(f"CREATE VIEW signals AS SELECT * FROM read_parquet('{pattern}', union_by_name=true)")
     except Exception:
         return {}
 
@@ -297,13 +299,13 @@ def pending_classifications(topic: str) -> list[dict]:
     raw_pattern = str(RAW_DIR / topic / "*.parquet")
     sig_pattern = str(SIGNALS_DIR / f"{topic}_*.parquet")
     try:
-        con.execute(f"CREATE VIEW raw AS SELECT * FROM read_parquet('{raw_pattern}')")
+        con.execute(f"CREATE VIEW raw AS SELECT * FROM read_parquet('{raw_pattern}', union_by_name=true)")
     except Exception:
         log.warning("No raw rows for topic '%s' — nothing to classify", topic)
         con.close()
         return []
     try:
-        con.execute(f"CREATE VIEW sig AS SELECT * FROM read_parquet('{sig_pattern}')")
+        con.execute(f"CREATE VIEW sig AS SELECT * FROM read_parquet('{sig_pattern}', union_by_name=true)")
     except Exception:
         log.info("No classified signals yet for topic '%s' — classifying full raw store", topic)
         con.execute("CREATE VIEW sig AS SELECT * FROM raw LIMIT 0")

@@ -80,12 +80,11 @@ def classify_batch(
                         {"role": "user", "content": user_msg},
                     ],
                     "temperature": 0.1,
-                    # gpt-4o-mini: thinking can't be disabled; effort defaults
-                    # to max, whose reasoning tokens count inside max_tokens and
-                    # can starve content (empty/truncated JSON). Pin explicitly.
+# Some backends spend reasoning tokens inside max_tokens —
+                    # pin effort explicitly so content never gets starved.
                     "reasoning_effort": "low",
                     "thinking": {"type": "enabled"},
-                    "max_tokens": 8192,
+"max_tokens": 4096,
                 },
                 timeout=120,
             )
@@ -108,6 +107,7 @@ def classify_batch(
                 "signal_type": "noise",
                 "sentiment": "neutral",
                 "strength": "casual",
+                "confirmation_status": "self_announced",
                 "entities": [],
                 "summary": "",
             }
@@ -125,6 +125,7 @@ def classify_batch(
                     "signal_type": "noise",
                     "sentiment": "neutral",
                     "strength": "casual",
+                    "confirmation_status": "self_announced",
                     "entities": [],
                     "summary": f"[classification failed: {e}]",
                 })
@@ -136,6 +137,7 @@ def classify_batch(
                     "signal_type": "noise",
                     "sentiment": "neutral",
                     "strength": "casual",
+                    "confirmation_status": "self_announced",
                     "entities": [],
                     "summary": f"[classification failed: {e}]",
                 })

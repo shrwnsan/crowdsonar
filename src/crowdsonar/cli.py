@@ -249,6 +249,14 @@ def main():
         print(f"{'='*60}")
         print(briefing)
 
+        # Persist briefing to Zone 1
+        from crowdsonar.storage import DATA_DIR
+        briefings_dir = DATA_DIR / "briefings"
+        briefings_dir.mkdir(parents=True, exist_ok=True)
+        briefing_path = briefings_dir / f"{topic_name}_{run_id}.md"
+        briefing_path.write_text(briefing, encoding="utf-8")
+        log.info("Briefing saved to %s", briefing_path)
+
 
 if __name__ == "__main__":
     main()
