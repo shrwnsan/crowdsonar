@@ -12,10 +12,12 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from crowdsonar import __version__
 from crowdsonar.config import load_topic, list_topics
@@ -24,6 +26,7 @@ from crowdsonar.ingest import (
     RawPost,
     ingest_praw,
     create_praw_client,
+    prefetch_subreddit_rules,
 )
 from crowdsonar.arctic_shift import ingest_arctic
 from crowdsonar.classify import classify_batch
@@ -33,6 +36,7 @@ from crowdsonar.storage import (
     pending_classifications,
 )
 from crowdsonar.synthesize import synthesize_briefing
+from crowdsonar.ranked_threads import format_threads_table, load_threads, upsert_threads
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +81,11 @@ def parse_args():
                         "(one-off deep backfill; default window is time_filter)")
     p.add_argument("--classify-only", action="store_true", help="Classify the pending raw/classified delta via LLM, append to signals (idempotent)")
     p.add_argument("--synthesize-only", action="store_true", help="Only generate briefing from classified data")
+    p.add_argument("--seo", action="store_true",
+                   help="Append the ranked-threads table to the digest/summary output")
+    p.add_argument("--seo-file", default=None, metavar="PATH",
+                   help="Ingest a ranked-threads JSON file (list of thread dicts) into the store "
+                        "for the topic, then exit — how threads get loaded until a real crawler exists")
     p.add_argument("--model", default="gpt-4o-mini", help="LLM model for classification")
     p.add_argument("--synth-model", default=None, help="LLM model for synthesis (default: same as --model)")
     p.add_argument("--config-dir", default=None, help="Override configs directory")
@@ -108,12 +117,31 @@ def main():
 
     log.info("Topic: %s | Run: %s | Source: %s", topic_name, run_id, args.source)
 
+    # --seo-file escape hatch: load threads from JSON into the ranked store,
+    # then exit (no ingest/classify/synthesis).
+    if args.seo_file:
+        try:
+            threads = json.loads(Path(args.seo_file).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"Error: cannot read --seo-file {args.seo_file}: {e}")
+            sys.exit(1)
+        if not isinstance(threads, list):
+            print("Error: --seo-file must contain a JSON list of thread dicts")
+            sys.exit(1)
+        upsert_threads(topic_name, threads)
+        print(f"--seo-file: {len(threads)} thread(s) upserted for '{topic_name}'")
+        return
+
     # ── Phase 1: Ingest ──
     all_posts: list[RawPost] = []
     pending: list[dict] = []  # raw/classified delta; computed in Phase 1 or --classify-only
 
     if not args.synthesize_only and not args.classify_only:
         backfill_days = reddit_cfg.get("backfill_days", 0) if args.backfill else 0
+
+        # Rules prefetch: cache subreddit rules once per TTL window;
+        # best-effort, never fails the run.
+        prefetch_subreddit_rules(reddit_cfg["subreddits"])
 
         # Arctic Shift — primary, credential-free
         if args.source in ("auto", "arctic"):
@@ -248,6 +276,12 @@ def main():
         print(f"BRIEFING: {topic_name}")
         print(f"{'='*60}")
         print(briefing)
+
+        if args.seo:
+            print(f"\n{'-'*60}")
+            print(f"RANKED THREADS: {topic_name}")
+            print(f"{'-'*60}")
+            print(format_threads_table(load_threads(topic_name)))
 
         # Persist briefing to Zone 1
         from crowdsonar.storage import DATA_DIR

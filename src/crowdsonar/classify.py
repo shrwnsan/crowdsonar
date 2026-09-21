@@ -114,6 +114,13 @@ def classify_batch(
             while len(parsed) < len(batch):
                 parsed.append({**default, "idx": len(parsed)})
 
+            # Pass the ingest-time keyword match through so it survives to
+            # the signals parquet (matched_phrase column).
+            for c in parsed:
+                idx = c.get("idx")
+                if isinstance(idx, int) and 0 <= idx < len(batch):
+                    c.setdefault("matched_phrase", batch[idx].keyword_match)
+
             all_classifications.extend(parsed)
 
         except (json.JSONDecodeError, KeyError, IndexError) as e:
@@ -123,6 +130,7 @@ def classify_batch(
                 all_classifications.append({
                     "idx": start + i,
                     "signal_type": "noise",
+                    "matched_phrase": batch[i].keyword_match,
                     "sentiment": "neutral",
                     "strength": "casual",
                     "confirmation_status": "self_announced",
@@ -135,6 +143,7 @@ def classify_batch(
                 all_classifications.append({
                     "idx": start + i,
                     "signal_type": "noise",
+                    "matched_phrase": batch[i].keyword_match,
                     "sentiment": "neutral",
                     "strength": "casual",
                     "confirmation_status": "self_announced",

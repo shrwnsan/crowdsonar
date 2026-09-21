@@ -7,13 +7,17 @@ archive, with PRAW kept as an optional real-time overlay for operators who
 hold Reddit credentials.
 """
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import httpx
 from praw import Reddit
 from praw.models import MoreComments
+
+from crowdsonar.storage import DATA_DIR
 
 log = logging.getLogger(__name__)
 
@@ -149,3 +153,43 @@ def ingest_praw(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Subreddit-rules cache: fetch each subreddit's rules ONCE per TTL window and
+# cache them at data/rules_cache/{subreddit}.json. Best-effort only — never
+# fails the ingest. Consuming the cached rules is a later pass; this warms
+# the cache alongside post ingestion.
+# ---------------------------------------------------------------------------
+
+RULES_TTL_SECONDS = 24 * 3600
+
+
+def prefetch_subreddit_rules(subreddits: list[str], ttl_seconds: int = RULES_TTL_SECONDS) -> None:
+    """Cache each subreddit's rules JSON (24h TTL, best-effort).
+
+    Skips the fetch when a fresh cache file exists; on any fetch/write
+    error logs a warning and moves on — ingest must never fail because of
+    this prefetch.
+    """
+    rules_dir = DATA_DIR / "rules_cache"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+
+    for sub in subreddits:
+        path = rules_dir / f"{sub}.json"
+        if path.exists() and (time.time() - path.stat().st_mtime) < ttl_seconds:
+            log.debug("Rules cache fresh for r/%s — skipping fetch", sub)
+            continue
+        try:
+            resp = httpx.get(
+                f"https://www.reddit.com/r/{sub}/about/rules.json",
+                headers={"User-Agent": "crowdsonar-rules-cache/0.1 (research)"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            path.write_text(json.dumps({
+                "subreddit": sub,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "rules": resp.json(),
+            }, ensure_ascii=False), encoding="utf-8")
+            log.info("Rules cache: wrote %s", path)
+        except Exception as e:
+            log.warning("Rules prefetch failed for r/%s (continuing): %s", sub, e)

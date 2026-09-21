@@ -39,6 +39,7 @@ def _signals_schema() -> pa.Schema:
         ("comment_score", pa.int64()),
         ("comment_created_utc", pa.float64()),
         ("keyword_match", pa.string()),
+        ("matched_phrase", pa.string()),  # nullable — absent in pre-existing files (union_by_name handles it)
         # Classification fields
         ("signal_type", pa.string()),
         ("sentiment", pa.string()),
@@ -96,6 +97,7 @@ def _row_dict(raw, classification: dict, run_id: str, topic: str) -> dict:
         "comment_score": raw.comment_score,
         "comment_created_utc": raw.comment_created_utc,
         "keyword_match": raw.keyword_match,
+        "matched_phrase": classification.get("matched_phrase", raw.keyword_match),
         "signal_type": classification.get("signal_type", "noise"),
         "sentiment": classification.get("sentiment", "neutral"),
         "strength": classification.get("strength", "casual"),
