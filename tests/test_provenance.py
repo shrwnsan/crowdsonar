@@ -5,7 +5,7 @@ import pytest
 
 import crowdsonar.synthesize as synthesize
 from crowdsonar.storage import ingest_mix, save_signals
-from crowdsonar.synthesize import _provenance_footer, synthesize_briefing
+from crowdsonar.synthesize import _mix_percentages, _provenance_footer, synthesize_briefing
 from helpers import make_signal_row as _signal_row
 
 
@@ -31,8 +31,14 @@ class TestIngestMix:
 class TestFooter:
     def test_format_and_ordering(self):
         footer = _provenance_footer({"arctic": 116, "praw": 7}, "past 7 days")
-        assert footer == ("---\n*Ingest mix (past 7 days): "
-                          "arctic (public archive) 94% · praw (real-time) 6% — n=123 signals*")
+        assert footer == ("*Ingest mix (past 7 days): "
+                          "arctic (public archive) 94% · praw (real-time) 6% — n=123 rows classified*")
+        assert "---" not in footer, "no HR token — must not collide with frontmatter/section splitters"
+
+    def test_percentages_sum_to_100(self):
+        for mix in ({"a": 1, "b": 1, "c": 1}, {"a": 2, "b": 1, "c": 1},
+                    {"a": 97, "b": 2, "c": 1}, {"x": 1}):
+            assert sum(p for _, p in _mix_percentages(mix)) == 100
 
     def test_unknown_source_gets_plain_label(self):
         footer = _provenance_footer({"mystery": 4}, "past 7 days")
@@ -66,7 +72,7 @@ class TestSynthesizeProvenance:
     def test_footer_appended_after_llm_output(self, briefed):
         out, _ = briefed
         assert out.startswith("## 1. Overview")
-        assert out.endswith("arctic (public archive) 90% · praw (real-time) 10% — n=10 signals*")
+        assert out.endswith("arctic (public archive) 90% · praw (real-time) 10% — n=10 rows classified*")
 
     def test_user_msg_carries_ingest_mix(self, briefed):
         _, captured = briefed

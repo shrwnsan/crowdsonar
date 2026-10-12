@@ -44,6 +44,35 @@ class TestClassificationDelta:
         save_signals([_signal_row(p) for p in pending], "topic", "run1")
         assert pending_classifications("topic") == []
 
+    def test_cross_source_twins_classified_once(self, data_dir):
+        """Archive outage banks a praw row; recovery banks its arctic twin.
+
+        The item must classify exactly once — arctic twin preferred while
+        both are unclassified, and a praw-side classification satisfies the
+        arctic twin once it arrives.
+        """
+        save_raw_posts([_post(source="praw")], "topic", "run1")
+        save_raw_posts([_post(source="arctic")], "topic", "run2")
+
+        pending = pending_classifications("topic")
+        assert [p["source"] for p in pending] == ["arctic"], "arctic twin wins the slot"
+
+        save_signals([_signal_row(p) for p in pending], "topic", "run1")
+        assert pending_classifications("topic") == []
+
+    def test_praw_side_classification_satisfies_arctic_twin(self, data_dir):
+        save_raw_posts([_post(source="praw")], "topic", "run1")
+        classified = pending_classifications("topic")  # praw only — no twin yet
+        save_signals([_signal_row(p) for p in classified], "topic", "run1")
+
+        save_raw_posts([_post(source="arctic")], "topic", "run2")
+        assert pending_classifications("topic") == [], "item identity is (post_id, comment_id), not source"
+
+    def test_unrelated_items_still_independent(self, data_dir):
+        save_raw_posts([_post(post_id="1a")], "topic", "run1")
+        save_raw_posts([_post(post_id="1a", comment_id="c1")], "topic", "run2")
+        assert len(pending_classifications("topic")) == 2, "comment rows are distinct items"
+
 
 class TestSignalQueries:
     def _seed(self, data_dir):

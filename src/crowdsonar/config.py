@@ -1,6 +1,7 @@
 """Load and validate topic configs from YAML."""
 
 import os
+import re
 from importlib import resources
 from pathlib import Path
 
@@ -42,6 +43,16 @@ def _validate(cfg: dict) -> None:
     missing = required - set(cfg.keys())
     if missing:
         raise ValueError(f"Topic config missing required keys: {missing}")
+
+    # `name` keys every on-disk path (data/signals/<topic>_*.parquet,
+    # data/raw/<topic>/) and lands inside DuckDB glob literals — restrict it
+    # to a safe charset so a shared topic YAML can't traverse paths or break
+    # out of a string literal.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", str(cfg["name"])):
+        raise ValueError(
+            "topic name must match [A-Za-z0-9][A-Za-z0-9._-]* "
+            f"(got: {cfg['name']!r})"
+        )
 
     reddit = cfg["sources"].get("reddit")
     if reddit:

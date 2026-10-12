@@ -7,7 +7,7 @@ from importlib import resources
 
 import httpx
 
-from .storage import get_signal_counts, query_signals
+from .storage import get_signal_counts, ingest_mix, query_signals
 
 log = logging.getLogger(__name__)
 
@@ -20,16 +20,37 @@ SOURCE_LABELS = {
 }
 
 
+def _mix_percentages(mix: dict) -> list[tuple[str, int]]:
+    """Source → integer percent via largest remainder (sums to exactly 100)."""
+    total = sum(mix.values())
+    if not total:
+        return []
+    exact = {s: 100 * n / total for s, n in mix.items()}
+    floors = {s: int(v) for s, v in exact.items()}
+    leftover = 100 - sum(floors.values())
+    # Hand leftover points to the largest fractional parts (ties → bigger source).
+    order = sorted(exact, key=lambda s: (exact[s] % 1, floors[s]), reverse=True)
+    for s in order[:leftover]:
+        floors[s] += 1
+    return sorted(floors.items(), key=lambda sv: -sv[1])
+
+
 def _provenance_footer(mix: dict, time_label: str) -> str:
-    """Deterministic ingest-mix line, e.g. `arctic (public archive) 94% · praw (real-time) 6%`."""
+    """Deterministic ingest-mix line, e.g. `arctic (public archive) 94% · praw (real-time) 6%`.
+
+    Computed from the STORE (all classified rows in the window via
+    storage.ingest_mix), never from the LLM-facing slice, and appended after
+    the LLM call — the mix cannot be hallucinated. No `---` separator: the
+    line must not collide with frontmatter/section-splitting parsers.
+    """
     if not mix:
         return ""
-    total = sum(mix.values()) or 1
+    total = sum(mix.values())
     parts = [
-        f"{SOURCE_LABELS.get(source, source)} {round(100 * n / total)}%"
-        for source, n in sorted(mix.items(), key=lambda kv: -kv[1])
+        f"{SOURCE_LABELS.get(source, source)} {pct}%"
+        for source, pct in _mix_percentages(mix)
     ]
-    return f"---\n*Ingest mix ({time_label}): {' · '.join(parts)} — n={total} signals*"
+    return f"*Ingest mix ({time_label}): {' · '.join(parts)} — n={total} rows classified*"
 
 
 def synthesize_briefing(
@@ -61,10 +82,9 @@ def synthesize_briefing(
     signal_counts = get_signal_counts(topic)
     time_label = topic_cfg.get("synthesis", {}).get("time_range_label", f"past {days} days")
 
-    # Provenance: every signal row carries the backend it came from.
-    ingest_mix = {}
-    for s in signals:
-        ingest_mix[s.get("source", "unknown")] = ingest_mix.get(s.get("source", "unknown"), 0) + 1
+    # Provenance: store-wide counts per backend for the whole window — not the
+    # score-ranked slice below — so the footer describes everything banked.
+    mix = ingest_mix(topic, days=days)
 
     # Build signal summaries for the LLM
     signal_items = []
@@ -92,7 +112,7 @@ def synthesize_briefing(
         "topic_description": topic_cfg.get("description", ""),
         "signals": signal_items,
         "signal_counts": signal_counts,
-        "ingest_mix": ingest_mix,
+        "ingest_mix": mix,
         "time_range": time_label,
     }, ensure_ascii=False)
 
@@ -130,7 +150,7 @@ def synthesize_briefing(
             return "⚠️ Synthesis returned empty content — raise the token budget or lower reasoning_effort."
         # Append the deterministic provenance line AFTER the LLM output so the
         # mix can't be hallucinated — it always reflects the stored rows.
-        footer = _provenance_footer(ingest_mix, time_label)
+        footer = _provenance_footer(mix, time_label)
         return f"{briefing}\n\n{footer}" if footer else briefing
 
     except Exception as e:

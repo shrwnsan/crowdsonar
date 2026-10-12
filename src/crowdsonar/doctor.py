@@ -15,9 +15,8 @@ from dataclasses import dataclass
 
 import httpx
 
-from . import __version__
+from . import __version__, storage
 from .arctic_shift import BASE_URL
-from .storage import DATA_DIR, RAW_DIR, SIGNALS_DIR
 
 ARCTIC_PROBE_PARAMS = {"subreddit": "askreddit", "limit": 1, "fields": "id"}
 
@@ -92,7 +91,7 @@ def check_llm() -> CheckResult:
                            "OPENAI_API_KEY not set — classify/synthesize will fail until it is")
 
     try:
-        resp = httpx.get(f"{base_url}/models",
+        resp = httpx.get(f"{base_url.rstrip('/')}/models",
                          headers={"Authorization": f"Bearer {api_key}"}, timeout=15.0)
     except httpx.HTTPError as e:
         return CheckResult("llm", "fail", f"endpoint unreachable ({e.__class__.__name__})")
@@ -107,29 +106,45 @@ def check_llm() -> CheckResult:
 
 
 def check_storage() -> CheckResult:
-    """DATA_DIR writable + a census of what's already banked."""
+    """DATA_DIR writable + a census of what's already banked.
+
+    Paths are read off the storage module at call time (not imported at module
+    scope) so redirected data dirs — tests, CROWDSONAR_DATA_DIR — are honored.
+    """
+    data_dir, signals_dir, raw_dir = storage.DATA_DIR, storage.SIGNALS_DIR, storage.RAW_DIR
     try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        probe = DATA_DIR / ".doctor_write_probe"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        probe = data_dir / ".doctor_write_probe"
         probe.write_text("x", encoding="utf-8")
         probe.unlink()
     except OSError as e:
-        return CheckResult("storage", "fail", f"{DATA_DIR} not writable ({e.__class__.__name__})")
+        return CheckResult("storage", "fail", f"{data_dir} not writable ({e.__class__.__name__})")
 
-    signals = len(list(SIGNALS_DIR.glob("*.parquet"))) if SIGNALS_DIR.exists() else 0
-    topics = len([d for d in RAW_DIR.iterdir() if d.is_dir()]) if RAW_DIR.exists() else 0
+    signals = len(list(signals_dir.glob("*.parquet"))) if signals_dir.exists() else 0
+    topics = len([d for d in raw_dir.iterdir() if d.is_dir()]) if raw_dir.exists() else 0
     return CheckResult("storage", "ok",
-                       f"{DATA_DIR} writable ({signals} signal file(s), {topics} raw topic(s))")
+                       f"{data_dir} writable ({signals} signal file(s), {topics} raw topic(s))")
 
 
 def run_doctor() -> int:
-    """Run all checks, print the matrix, return the process exit code."""
-    results = [
-        check_arctic(),
-        check_reddit_creds(),
-        check_llm(),
-        check_storage(),
+    """Run all checks, print the matrix, return the process exit code.
+
+    Each check is crash-guarded: the doctor's own contract is "always print a
+    matrix, always exit cleanly" — a non-JSON 200 from a captive portal is a
+    finding, not a traceback.
+    """
+    checks = [
+        ("arctic", check_arctic),
+        ("reddit", check_reddit_creds),
+        ("llm", check_llm),
+        ("storage", check_storage),
     ]
+    results = []
+    for name, fn in checks:
+        try:
+            results.append(fn())
+        except Exception as e:  # noqa: BLE001 — the guard IS the feature
+            results.append(CheckResult(name, "fail", f"check crashed: {e.__class__.__name__}"))
 
     print(f"crowdsonar doctor — v{__version__}")
     glyph = {"ok": "ok  ", "warn": "warn", "fail": "FAIL"}

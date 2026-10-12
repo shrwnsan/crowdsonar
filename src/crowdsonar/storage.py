@@ -321,8 +321,17 @@ def save_raw_posts(
 def pending_classifications(topic: str) -> list[dict]:
     """Delta for --classify-only: raw rows with no matching classified row.
 
-    Anti-join on (source, post_id, comment_id). Returns raw-row dicts.
-    Idempotent: after classification lands, the delta is empty.
+    Identity here is the ITEM (post_id, comment_id), not the row: the same
+    item can legitimately be banked twice under different backends (a praw
+    overlay row during an archive outage, then its arctic twin once the
+    archive recovers). The delta therefore:
+      1. reduces raw rows to one candidate per item, preferring the arctic
+         twin (archive provenance is the default story),
+      2. anti-joins against classified signals on (post_id, comment_id) —
+         source-agnostic, so a praw-side classification satisfies the arctic
+         twin too.
+    Without this, an archive blip + recovery double-classifies the same item
+    and double-counts it in briefings.
     """
     con = duckdb.connect(":memory:")
     raw_pattern = str(RAW_DIR / topic / "*.parquet")
@@ -340,12 +349,21 @@ def pending_classifications(topic: str) -> list[dict]:
         con.execute("CREATE VIEW sig AS SELECT * FROM raw LIMIT 0")
 
     query = """
-        SELECT r.* FROM raw r
+        WITH candidates AS (
+            SELECT * FROM raw r
+            WHERE r.source = 'arctic'
+               OR NOT EXISTS (
+                    SELECT 1 FROM raw r2
+                    WHERE r2.source = 'arctic'
+                      AND r2.post_id IS NOT DISTINCT FROM r.post_id
+                      AND r2.comment_id IS NOT DISTINCT FROM r.comment_id
+               )
+        )
+        SELECT c.* FROM candidates c
         WHERE NOT EXISTS (
             SELECT 1 FROM sig s
-            WHERE s.source IS NOT DISTINCT FROM r.source
-              AND s.post_id IS NOT DISTINCT FROM r.post_id
-              AND s.comment_id IS NOT DISTINCT FROM r.comment_id
+            WHERE s.post_id IS NOT DISTINCT FROM c.post_id
+              AND s.comment_id IS NOT DISTINCT FROM c.comment_id
         )
     """
     rows = [dict(zip([d[0] for d in con.description], r))
