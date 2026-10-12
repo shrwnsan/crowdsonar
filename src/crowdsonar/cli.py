@@ -9,6 +9,7 @@ Usage:
     crowdsonar --topic example --classify-only
     crowdsonar --topic example --synthesize-only
     crowdsonar --list
+    crowdsonar doctor
 """
 
 import argparse
@@ -65,6 +66,9 @@ def _raw_row_to_post(row: dict) -> RawPost:
 
 def parse_args():
     p = argparse.ArgumentParser(description="CrowdSonar — social signal synthesis engine")
+    p.add_argument("command", nargs="?", default=None, choices=["doctor"],
+                   help="crowdsonar doctor — health-check every backend (archive, "
+                        "credentials, LLM endpoint, local store) and exit")
     p.add_argument("--topic", "-t", help="Topic config name (from configs/)")
     p.add_argument("--list", "-l", action="store_true", help="List available topics")
     p.add_argument("--dry-run", action="store_true", help="Ingest and persist the raw store, skip all LLM calls")
@@ -85,6 +89,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    if args.command == "doctor":
+        from crowdsonar.doctor import run_doctor
+        sys.exit(run_doctor())
 
     if args.list:
         topics = list_topics(args.config_dir)

@@ -13,6 +13,24 @@ log = logging.getLogger(__name__)
 
 PROMPT_DIR = resources.files("crowdsonar") / "prompts"
 
+# Provenance labels for the ingest-mix line appended to every briefing.
+SOURCE_LABELS = {
+    "arctic": "arctic (public archive)",
+    "praw": "praw (real-time)",
+}
+
+
+def _provenance_footer(mix: dict, time_label: str) -> str:
+    """Deterministic ingest-mix line, e.g. `arctic (public archive) 94% · praw (real-time) 6%`."""
+    if not mix:
+        return ""
+    total = sum(mix.values()) or 1
+    parts = [
+        f"{SOURCE_LABELS.get(source, source)} {round(100 * n / total)}%"
+        for source, n in sorted(mix.items(), key=lambda kv: -kv[1])
+    ]
+    return f"---\n*Ingest mix ({time_label}): {' · '.join(parts)} — n={total} signals*"
+
 
 def synthesize_briefing(
     topic: str,
@@ -43,6 +61,11 @@ def synthesize_briefing(
     signal_counts = get_signal_counts(topic)
     time_label = topic_cfg.get("synthesis", {}).get("time_range_label", f"past {days} days")
 
+    # Provenance: every signal row carries the backend it came from.
+    ingest_mix = {}
+    for s in signals:
+        ingest_mix[s.get("source", "unknown")] = ingest_mix.get(s.get("source", "unknown"), 0) + 1
+
     # Build signal summaries for the LLM
     signal_items = []
     for s in actionable:
@@ -69,6 +92,7 @@ def synthesize_briefing(
         "topic_description": topic_cfg.get("description", ""),
         "signals": signal_items,
         "signal_counts": signal_counts,
+        "ingest_mix": ingest_mix,
         "time_range": time_label,
     }, ensure_ascii=False)
 
@@ -104,7 +128,10 @@ def synthesize_briefing(
             # empty briefing gets persisted as a 0-byte file and renders as a
             # body-less digest.
             return "⚠️ Synthesis returned empty content — raise the token budget or lower reasoning_effort."
-        return briefing
+        # Append the deterministic provenance line AFTER the LLM output so the
+        # mix can't be hallucinated — it always reflects the stored rows.
+        footer = _provenance_footer(ingest_mix, time_label)
+        return f"{briefing}\n\n{footer}" if footer else briefing
 
     except Exception as e:
         log.error("Synthesis failed: %s", e)

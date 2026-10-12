@@ -202,6 +202,35 @@ def get_signal_counts(topic: str) -> dict:
     return {row[0]: row[1] for row in result}
 
 
+def ingest_mix(topic: str, days: int | None = None) -> dict:
+    """Count classified signals per ingest backend (the `source` column).
+
+    This is the provenance read-out: e.g. {"arctic": 116, "praw": 7} for a
+    window. Briefings surface it as an ingest-mix line so consumers know how
+    much of the picture is archive vs real-time.
+    """
+    con = duckdb.connect(":memory:")
+    pattern = str(SIGNALS_DIR / f"{topic}_*.parquet")
+    try:
+        con.execute(f"CREATE VIEW signals AS SELECT * FROM read_parquet('{pattern}', union_by_name=true)")
+    except Exception:
+        return {}
+
+    clauses, params = [], {}
+    if days:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        clauses.append("classified_at >= $cutoff")
+        params["cutoff"] = cutoff
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    result = con.execute(
+        f"SELECT source, count(*) as cnt FROM signals{where} GROUP BY source ORDER BY cnt DESC",
+        params,
+    ).fetchall()
+    con.close()
+    return {row[0]: row[1] for row in result}
+
+
 # ---------------------------------------------------------------------------
 # Raw post store: data/raw/<topic>/<run_id>.parquet
 # Persisted BEFORE any LLM call. Append-only, deduped on
