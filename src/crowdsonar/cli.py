@@ -26,8 +26,14 @@ from crowdsonar.ingest import (
     ingest_praw,
     create_praw_client,
 )
-from crowdsonar.arctic_shift import ingest_arctic
+from crowdsonar.arctic_shift import ingest_arctic, probe_coverage
 from crowdsonar.classify import classify_batch
+from crowdsonar.router import (
+    DEFAULT_FRESHNESS_HOURS,
+    CoverageReport,
+    RouterDecision,
+    decide_overlay,
+)
 from crowdsonar.storage import (
     save_signals,
     save_raw_posts,
@@ -73,9 +79,14 @@ def parse_args():
     p.add_argument("--list", "-l", action="store_true", help="List available topics")
     p.add_argument("--dry-run", action="store_true", help="Ingest and persist the raw store, skip all LLM calls")
     p.add_argument("--source", choices=["auto", "arctic", "praw"], default="auto",
-                   help="Ingestion source: arctic = Arctic Shift API (credential-free, "
-                        "default); praw = Reddit OAuth only; auto = arctic + PRAW overlay "
-                        "when REDDIT_CLIENT_ID/SECRET are set")
+                   help="Ingestion source: arctic = Arctic Shift API only (credential-free); "
+                        "praw = Reddit OAuth only; auto (default) = freshness-aware router — "
+                        "arctic first, PRAW overlay only when the archive lacks coverage of "
+                        "the freshness window (sources.reddit.freshness_hours, default 48h)")
+    p.add_argument("--overlay", choices=["router", "always"], default="router",
+                   help="PRAW overlay policy under --source auto: router (default) gates the "
+                        "overlay on archive freshness; always = legacy composition (overlay "
+                        "runs whenever credentials are set)")
     p.add_argument("--backfill", action="store_true",
                    help="Widen the ingest window to backfill_days from the topic config "
                         "(one-off deep backfill; default window is time_filter)")
@@ -95,9 +106,9 @@ def main():
         # almost certainly a typo, and silently ignoring it is worse than
         # the loud error this used to produce.
         run_defaults = {"topic": None, "dry_run": False, "source": "auto",
-                        "backfill": False, "classify_only": False,
-                        "synthesize_only": False, "model": "gpt-4o-mini",
-                        "synth_model": None}
+                        "overlay": "router", "backfill": False,
+                        "classify_only": False, "synthesize_only": False,
+                        "model": "gpt-4o-mini", "synth_model": None}
         stray = [f for f, d in run_defaults.items() if getattr(args, f) != d]
         if args.list or stray:
             print(f"Error: `crowdsonar doctor` takes no run flags (got: {', '.join(stray)})")
@@ -151,8 +162,35 @@ def main():
             for e in arctic_result.errors:
                 log.warning("Arctic Shift: %s", e)
 
-        # PRAW — optional real-time overlay
-        if args.source in ("auto", "praw"):
+        # PRAW — real-time overlay, gated by the freshness router under `auto`.
+        # Raw-store dedupe keys on (source, post_id, comment_id) and the
+        # classification delta keys on item identity, so overlay rows bank
+        # alongside archive rows without double-classifying.
+        decision = None
+        if args.source == "auto":
+            stale_after = float(reddit_cfg.get("freshness_hours", DEFAULT_FRESHNESS_HOURS))
+            if args.overlay == "always":
+                decision = RouterDecision(
+                    overlay=True,
+                    reason="--overlay always (legacy composition: overlay whenever creds are set)")
+            else:
+                probes = probe_coverage(reddit_cfg["subreddits"], stale_after)
+                report = CoverageReport(
+                    subs_probed=sum(1 for p in probes if not p.error),
+                    subs_covered=sum(1 for p in probes if p.covered),
+                    probe_errors=sum(1 for p in probes if p.error),
+                    matched_items=len(arctic_result.posts) if arctic_result else 0,
+                    ingest_errors=len(arctic_result.errors) if arctic_result else 0,
+                )
+                decision = decide_overlay(report, stale_after)
+            level = log.warning if decision.fallback else log.info
+            level("Phase 1b: PRAW overlay — %s (%s)",
+                  "running" if decision.overlay else "SKIPPED", decision.reason)
+            run_overlay = decision.overlay
+        else:
+            run_overlay = args.source == "praw"
+
+        if run_overlay:
             client_id = os.environ.get("REDDIT_CLIENT_ID")
             client_secret = os.environ.get("REDDIT_CLIENT_SECRET")
             if client_id and client_secret:
@@ -177,6 +215,13 @@ def main():
             elif args.source == "praw":
                 log.error("--source praw requires REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET")
                 sys.exit(1)
+            elif args.source == "auto":
+                # No fallback source available. When the router is in fallback
+                # mode (archive effectively down) this run may bank nothing at
+                # all — that must be loud, not an exit-0 that looks healthy.
+                emit = log.error if decision.fallback else log.warning
+                emit("PRAW overlay wanted (%s) but no REDDIT_CLIENT_ID/SECRET — "
+                     "continuing with archive data only", decision.reason)
             else:
                 log.info("No REDDIT_CLIENT_ID/SECRET — PRAW overlay skipped (Arctic Shift only)")
 
