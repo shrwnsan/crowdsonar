@@ -92,7 +92,10 @@ class ArcticShiftClient:
             err = body.get("error")
             if err:
                 msg = str(err)
-                if "imeout" in msg:  # "Query timed out" / "Timeout. Maybe slow down a bit"
+                if "imeout" in msg or "imed out" in msg:
+                    # "Timeout. Maybe slow down a bit" / "Query timed out" —
+                    # the two phrasings share no longer substring ("imeout"
+                    # misses "timed out"), so match both. Regression-tested.
                     p = dict(p)
                     lim = p.get("limit", PAGE_SIZE)
                     # "auto" (comment search) has no numeric half — drop to 100.

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "1abc001",
+    "title": "Study group forming for the October exam",
+    "selftext": "Looking for people working through the same certification track.",
+    "subreddit": "exampletopic",
+    "author": "alice",
+    "score": 42,
+    "created_utc": 1760000000.0
+  },
+  {
+    "id": "1abc002",
+    "title": "Random daily thread",
+    "selftext": "Nothing to do with any tracked keywords at all.",
+    "subreddit": "exampletopic",
+    "author": "bob",
+    "score": 7,
+    "created_utc": 1760008640.0
+  },
+  {
+    "id": "1abc003",
+    "title": "Just certified — experience report",
+    "selftext": "Passed the exam today, sharing my prep notes.",
+    "subreddit": "exampletopic",
+    "author": "[deleted]",
+    "score": 133,
+    "created_utc": 1760017280.0
+  },
+  {
+    "id": "1abc003",
+    "title": "Just certified — experience report (duplicate from cursor overlap)",
+    "selftext": "Passed the exam today, sharing my prep notes.",
+    "subreddit": "exampletopic",
+    "author": "[deleted]",
+    "score": 130,
+    "created_utc": 1760017280.0
+  }
+]
