@@ -1,56 +1,63 @@
-"""Freshness router: the full decision table, plus CLI wiring under `auto`."""
+"""Freshness router: the decision table, plus CLI wiring under `auto`."""
 
 import copy
-from datetime import datetime, timezone
+import logging
 
 import crowdsonar.cli as cli
-from crowdsonar.ingest import IngestResult, RawPost
-from crowdsonar.router import DEFAULT_FRESHNESS_HOURS, assess, decide_overlay
+from crowdsonar.arctic_shift import CoverageProbe
+from crowdsonar.ingest import IngestResult
+from crowdsonar.router import (
+    DEFAULT_FRESHNESS_HOURS,
+    CoverageReport,
+    decide_overlay,
+)
 
 
-def _post(age_hours: float) -> RawPost:
-    created = datetime.now(timezone.utc).timestamp() - age_hours * 3600
-    return RawPost(source="arctic", post_id="1a", post_title="t", post_url="u",
-                   post_subreddit="s", post_author="a", post_score=1,
-                   post_created_utc=created, post_body="b")
-
-
-class TestAssess:
-    def test_newest_item_wins(self):
-        report = assess([_post(50), _post(3)], [])
-        assert report.items == 2
-        assert 2.5 < report.age_hours < 3.5
-
-    def test_empty_and_error_counts(self):
-        report = assess([], ["e1", "e2"])
-        assert report.items == 0 and report.errors == 2
-        assert report.age_hours is None
+def _report(**kw) -> CoverageReport:
+    return CoverageReport(**kw)
 
 
 class TestDecisionTable:
-    def test_fresh_archive_skips_overlay(self):
-        d = decide_overlay(assess([_post(3)], []))
+    def test_fully_covered_archive_skips_overlay(self):
+        d = decide_overlay(_report(subs_probed=2, subs_covered=2))
         assert d.overlay is False and not d.fallback
-        assert "archive fresh" in d.reason and "3" in d.reason
+        assert "archive fresh" in d.reason and "2/2" in d.reason
 
-    def test_stale_archive_runs_overlay(self):
-        d = decide_overlay(assess([_post(51)], []))
+    def test_partially_stale_archive_tops_up(self):
+        d = decide_overlay(_report(subs_probed=3, subs_covered=2, matched_items=5))
         assert d.overlay is True and not d.fallback
-        assert "archive stale" in d.reason
+        assert "archive stale" in d.reason and "1/3" in d.reason
 
-    def test_custom_threshold(self):
-        d = decide_overlay(assess([_post(5)], []), stale_after_hours=2)
-        assert d.overlay is True and "2h threshold" in d.reason
+    def test_probe_errors_noted_in_reason(self):
+        d = decide_overlay(_report(subs_probed=2, subs_covered=1,
+                                   probe_errors=1, matched_items=4))
+        assert d.overlay is True
+        assert "1 probe error" in d.reason
 
-    def test_empty_window_is_fallback(self):
-        d = decide_overlay(assess([], []))
+    def test_nothing_delivered_is_fallback(self):
+        d = decide_overlay(_report(subs_probed=2, subs_covered=0, matched_items=0))
         assert d.overlay is True and d.fallback is True
-        assert "returned nothing" in d.reason
 
-    def test_errored_archive_is_fallback(self):
-        d = decide_overlay(assess([], ["e", "e", "e"]))
+    def test_quiet_topic_with_partial_coverage_is_not_fallback(self):
+        # The archive reached the recent tail on at least one subreddit and
+        # delivered matched items: a quiet keyword is not an outage. Top up,
+        # but stay at INFO — this is normal operation.
+        d = decide_overlay(_report(subs_probed=2, subs_covered=1, matched_items=0))
+        assert d.overlay is True and d.fallback is False
+
+    def test_ingest_errors_upgrade_to_fallback(self):
+        d = decide_overlay(_report(subs_probed=2, subs_covered=1,
+                                   matched_items=0, ingest_errors=2))
         assert d.overlay is True and d.fallback is True
-        assert "archive errored" in d.reason
+
+    def test_all_probes_failed_with_items_tops_up(self):
+        d = decide_overlay(_report(subs_probed=0, probe_errors=2, matched_items=7))
+        assert d.overlay is True and d.fallback is False
+        assert "coverage unverifiable" in d.reason
+
+    def test_all_probes_failed_with_nothing_is_fallback(self):
+        d = decide_overlay(_report(subs_probed=0, matched_items=0))
+        assert d.overlay is True and d.fallback is True
 
     def test_default_threshold_is_48h(self):
         assert DEFAULT_FRESHNESS_HOURS == 48.0
@@ -62,7 +69,7 @@ class _FakePrawClient:
 
 
 class TestCliAutoRouting:
-    """The `auto` path must consult the router before touching praw."""
+    """The `auto` path must consult coverage probes before touching praw."""
 
     CFG = {
         "name": "topic",
@@ -73,20 +80,28 @@ class TestCliAutoRouting:
         "signal_types": [], "synthesis": {},
     }
 
-    def _run(self, monkeypatch, arctic_result, freshness_hours=None):
+    def _run(self, monkeypatch, probes, freshness_hours=None,
+             overlay=None, source=None):
         cfg = copy.deepcopy(self.CFG)
         if freshness_hours:
             cfg["sources"]["reddit"]["freshness_hours"] = freshness_hours
 
         monkeypatch.setenv("REDDIT_CLIENT_ID", "x")
         monkeypatch.setenv("REDDIT_CLIENT_SECRET", "y")
-        calls = {"arctic": 0, "praw": 0}
+        calls = {"probes": 0, "praw": 0, "hours": None}
 
         monkeypatch.setattr(cli, "load_topic", lambda name, d=None: cfg)
-        monkeypatch.setattr(cli, "ingest_arctic", lambda **kw: arctic_result)
+        monkeypatch.setattr(cli, "ingest_arctic", lambda **kw: IngestResult())
         monkeypatch.setattr(cli, "save_raw_posts", lambda posts, t, r: ("path", len(posts)))
         monkeypatch.setattr(cli, "pending_classifications", lambda t: [])
         monkeypatch.setattr(cli, "create_praw_client", lambda **kw: _FakePrawClient())
+
+        def fake_probes(subs, hours, base_url=None):
+            calls["probes"] += 1
+            calls["hours"] = hours
+            return probes
+
+        monkeypatch.setattr(cli, "probe_coverage", fake_probes)
 
         def fake_praw(**kw):
             calls["praw"] += 1
@@ -95,37 +110,43 @@ class TestCliAutoRouting:
         monkeypatch.setattr(cli, "ingest_praw", fake_praw)
 
         argv = ["crowdsonar", "--topic", "topic", "--dry-run"]
+        if overlay:
+            argv += ["--overlay", overlay]
+        if source:
+            argv += ["--source", source]
         monkeypatch.setattr("sys.argv", argv)
         cli.main()
         return calls
 
-    def test_fresh_archive_never_touches_praw(self, monkeypatch, capsys):
-        calls = self._run(monkeypatch, IngestResult(posts=[_post(3)]))
-        assert calls["praw"] == 0
-        assert "[DRY RUN] 1 items" in capsys.readouterr().out
+    def test_fresh_archive_never_touches_praw(self, monkeypatch, caplog):
+        caplog.set_level(logging.INFO)
+        probes = [CoverageProbe(subreddit="s", covered=True)]
+        calls = self._run(monkeypatch, probes)
+        assert calls["praw"] == 0 and calls["probes"] == 1
+        phase1b = [r for r in caplog.records if "Phase 1b" in r.getMessage()]
+        assert phase1b and phase1b[0].levelno == logging.INFO
+        assert "SKIPPED" in phase1b[0].getMessage()
 
-    def test_stale_archive_runs_overlay(self, monkeypatch, capsys):
-        calls = self._run(monkeypatch, IngestResult(posts=[_post(60)]))
+    def test_stale_archive_runs_overlay(self, monkeypatch):
+        probes = [CoverageProbe(subreddit="s", covered=False)]
+        calls = self._run(monkeypatch, probes)
         assert calls["praw"] == 1
 
     def test_custom_freshness_hours_honored(self, monkeypatch):
-        calls = self._run(monkeypatch, IngestResult(posts=[_post(5)]), freshness_hours=2)
-        assert calls["praw"] == 1
+        calls = self._run(monkeypatch, [CoverageProbe("s", covered=False)],
+                          freshness_hours=2)
+        assert calls["hours"] == 2
+
+    def test_overlay_always_skips_probes(self, monkeypatch):
+        # Legacy composition: overlay whenever creds are set, no probe cost.
+        calls = self._run(monkeypatch, [], overlay="always")
+        assert calls["probes"] == 0 and calls["praw"] == 1
 
     def test_arctic_only_flag_skips_router_and_praw(self, monkeypatch):
-        import argparse
-        orig_parse = cli.parse_args
-
-        def forced_arctic():
-            args = orig_parse()
-            args.source = "arctic"
-            return args
-
-        monkeypatch.setattr(cli, "parse_args", forced_arctic)
         monkeypatch.setenv("REDDIT_CLIENT_ID", "x")
         monkeypatch.setenv("REDDIT_CLIENT_SECRET", "y")
         monkeypatch.setattr(cli, "load_topic", lambda name, d=None: self.CFG)
-        monkeypatch.setattr(cli, "ingest_arctic", lambda **kw: IngestResult(posts=[_post(90)]))
+        monkeypatch.setattr(cli, "ingest_arctic", lambda **kw: IngestResult())
         monkeypatch.setattr(cli, "save_raw_posts", lambda posts, t, r: ("path", len(posts)))
         monkeypatch.setattr(cli, "pending_classifications", lambda t: [])
 
@@ -133,5 +154,14 @@ class TestCliAutoRouting:
             raise AssertionError("praw must not run under --source arctic")
 
         monkeypatch.setattr(cli, "ingest_praw", boom)
-        monkeypatch.setattr("sys.argv", ["crowdsonar", "--topic", "topic", "--dry-run"])
+        monkeypatch.setattr("sys.argv", ["crowdsonar", "--topic", "topic",
+                                         "--dry-run", "--source", "arctic"])
         cli.main()
+
+    def test_fallback_decision_logs_at_warning(self, monkeypatch, caplog):
+        # Probe failed AND the archive pass delivered nothing — the run may
+        # bank nothing at all, so the fallback must not hide behind INFO.
+        probes = [CoverageProbe(subreddit="s", covered=False, error="ConnectError")]
+        self._run(monkeypatch, probes)
+        phase1b = [r for r in caplog.records if "Phase 1b" in r.getMessage()]
+        assert phase1b and phase1b[0].levelno == logging.WARNING

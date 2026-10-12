@@ -28,7 +28,8 @@ crowdsonar doctor
 | `--list`, `-l` | List available topics |
 | *(default run)* | Full pipeline: ingest → classify → synthesize |
 | `--dry-run` | Ingest only — skip classification and synthesis |
-| `--source` | `auto` (default) = freshness-aware router — archive first, PRAW overlay only when the archive is stale/empty/errored; `arctic` = archive only; `praw` = Reddit OAuth only |
+| `--source` | `auto` (default) = freshness-aware router — archive first, PRAW overlay only when the archive lacks coverage of the freshness window; `arctic` = archive only; `praw` = Reddit OAuth only |
+| `--overlay` | With `--source auto`: `router` (default) gates the overlay on archive coverage; `always` = legacy composition (overlay whenever credentials are set) |
 | `--backfill` | One-off deep backfill — widens the ingest window to `backfill_days` from the topic config |
 | `--classify-only` | Only classify already-stored data |
 | `--synthesize-only` | Only generate a briefing from classified data |
@@ -56,7 +57,7 @@ crowdsonar --list
 crowdsonar --topic example
 ```
 
-Default `--source auto` is a **freshness-aware router**: the Arctic Shift API (credential-free) runs first, and the PRAW real-time overlay is invoked only when the archive's newest item is older than the topic's `freshness_hours` (default 48h) — or when the archive is empty or errored. Fresh archive + no credentials is a fully functional zero-key run.
+Default `--source auto` is a **freshness-aware router**: the Arctic Shift API (credential-free) runs first, then one keyword-free coverage probe per subreddit asks whether the archive holds anything newer than the topic's `freshness_hours` (default 48h). The PRAW real-time overlay runs only for subreddits the archive doesn't reach — archive lag, not topic quietness, is what fires it. When the archive effectively failed the pass, the run says so at WARNING instead of exiting zero silently. Fresh archive + no credentials is a fully functional zero-key run. Decision table: `docs/ingest.md`.
 
 Any OpenAI-compatible chat-completions endpoint works for classification and synthesis — point `OPENAI_BASE_URL` at Mistral, DeepSeek, OpenRouter, a local llama.cpp server, anything speaking the OpenAI protocol.
 

@@ -58,3 +58,9 @@ def _validate(cfg: dict) -> None:
     if reddit:
         if not reddit.get("subreddits"):
             raise ValueError("reddit.subreddits must be a non-empty list")
+        fh = reddit.get("freshness_hours")
+        if fh is not None and (isinstance(fh, bool) or not isinstance(fh, (int, float)) or fh <= 0):
+            raise ValueError(
+                "reddit.freshness_hours must be a positive number of hours "
+                f"(got: {fh!r})"
+            )

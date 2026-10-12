@@ -39,23 +39,39 @@ default path.
 `auto` is a freshness-aware chain, not a fixed composition:
 
 1. Ingest from the archive (Tier 1).
-2. Assess freshness: the age of the newest item, compared against
-   `sources.reddit.freshness_hours` (default 48).
+2. Probe coverage: one keyword-free query per subreddit (`fields=id`,
+   `limit=1`) asking "does the archive hold ANY post newer than
+   `sources.reddit.freshness_hours` (default 48h)?" This measures archive
+   LAG, not keyword-matched item age — the ingest result cannot distinguish
+   "archive is 50h behind" from "nobody used the keyword in 50h", and
+   routing on matched-item age would fire the overlay forever on quiet
+   topics.
 3. Decide:
 
-| Archive state | Overlay runs? | Why |
-|---|---|---|
-| Items fresh (newest within threshold) | **no** | credential-free run — the archive already covers the window |
-| Items stale (newest older than threshold) | yes | overlay tops up the recent tail the archive missed |
-| Window empty (no errors) | yes | overlay becomes the source |
-| Errored with zero items | yes | overlay becomes the fallback |
+| Archive state | Overlay runs? | Fallback? | Why |
+|---|---|---|---|
+| Every subreddit covered within the threshold | **no** | no | credential-free run — the archive reaches the recent tail |
+| Some subreddits uncovered | yes | no | overlay tops up the tail the archive missed |
+| Partially covered + zero matched items + archive ingest errors | yes | **yes** | the archive effectively failed this pass |
+| All coverage probes failed + zero matched items | yes | **yes** | coverage unverifiable and nothing delivered |
+
+`fallback` means the archive effectively wasn't a source this pass. It only
+changes how loud the run is — WARNING instead of INFO, ERROR when the overlay
+is also wanted but credentials are missing — runs never fail solely because
+the archive is down, but they don't get to look healthy either.
+
+`--overlay always` restores the pre-router composition (overlay whenever
+credentials are set, no probe cost) — the escape hatch if the probes
+misbehave or you simply want the old behavior. Pre-0.2.0 setups that relied
+on always-overlay should set this once and move on deliberately, not
+silently.
 
 The decision (and its reason) is logged every run, and each row's `source`
 column preserves which tier delivered it — the briefing's ingest-mix line is
-exactly this read-out. Health here means **data freshness**, not just
-reachability: the archive is the history tier, the overlay is the last-hours
-tier. The decision table lives in `router.py` as pure functions; the CLI wiring
-is deliberately thin.
+exactly this read-out. Health here means **coverage of the freshness
+window**, not just reachability: the archive is the history tier, the overlay
+is the last-hours tier. The decision table lives in `router.py` as pure
+functions; the CLI wiring is deliberately thin.
 
 ## Tier 3 — session-based readers (documented, not shipped)
 

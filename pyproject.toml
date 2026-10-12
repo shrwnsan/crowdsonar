@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "crowdsonar"
-version = "0.1.2"
+version = "0.2.0"
 description = "Self-hosted social signal synthesis engine — ingest, classify, and synthesize community chatter into actionable briefings."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -203,3 +203,62 @@ class TestRetries:
         with pytest.raises(httpx.HTTPStatusError):
             self._client(handler).search("posts", {})
         assert calls["n"] == 3
+
+    def test_429_exhausts_and_raises(self):
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            return httpx.Response(429, headers={"X-RateLimit-Reset": "1"})
+
+        with pytest.raises(httpx.HTTPStatusError):
+            self._client(handler).search("posts", {})
+        assert calls["n"] == 3
+
+    def test_transport_error_exhausts_and_raises(self):
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            raise httpx.ConnectError("boom")
+
+        with pytest.raises(httpx.ConnectError):
+            self._client(handler).search("posts", {})
+        assert calls["n"] == 3, "exhaustion must surface, not read as an empty window"
+
+
+class TestCoverageProbe:
+    """Keyword-free freshness probes: one fields=id query per subreddit."""
+
+    class _Fake:
+        def __init__(self, responses):
+            self.responses = responses
+            self.calls = []
+
+        def search(self, kind, params):
+            self.calls.append((kind, params))
+            r = self.responses[params["subreddit"]]
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        def close(self):
+            pass
+
+    def test_probe_shape_and_coverage(self, monkeypatch):
+        fake = self._Fake({"fresh": [{"id": "1a"}], "stale": []})
+        monkeypatch.setattr(arctic_shift, "ArcticShiftClient", lambda base_url: fake)
+        probes = arctic_shift.probe_coverage(["fresh", "stale"], within_hours=48)
+        assert [(p.subreddit, p.covered, p.error) for p in probes] == [
+            ("fresh", True, ""), ("stale", False, "")]
+        kind, params = fake.calls[0]
+        assert kind == "posts"
+        assert params["fields"] == "id" and params["limit"] == 1, "probe must stay keyword-free and cheap"
+        assert "after" in params, "cutoff must bound the probe window"
+
+    def test_probe_errors_count_as_uncovered(self, monkeypatch):
+        fake = self._Fake({"down": RuntimeError("x")})
+        monkeypatch.setattr(arctic_shift, "ArcticShiftClient", lambda base_url: fake)
+        probes = arctic_shift.probe_coverage(["down"], within_hours=48)
+        assert probes[0].covered is False
+        assert probes[0].error == "RuntimeError"

@@ -25,6 +25,7 @@ retried with backoff and a shrunk limit.
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -79,10 +80,14 @@ class ArcticShiftClient:
             try:
                 resp = self._http.get(path, params=p)
             except httpx.HTTPError as e:
+                if attempt == 2:
+                    raise  # exhaustion must surface — silence reads as an empty window
                 log.warning("Arctic Shift %s: %s (attempt %d/3)", path, e, attempt + 1)
                 time.sleep(2 ** attempt)
                 continue
             if resp.status_code == 429:
+                if attempt == 2:
+                    resp.raise_for_status()
                 reset = float(resp.headers.get("X-RateLimit-Reset") or 30)
                 log.warning("Arctic Shift: rate limited, sleeping %.0fs", min(reset, 120))
                 time.sleep(min(reset, 120))
@@ -259,3 +264,40 @@ def ingest_arctic(
 
     log.info("Arctic Shift: collected %d items, %d errors", len(result.posts), len(result.errors))
     return result
+
+
+@dataclass
+class CoverageProbe:
+    """Keyword-free freshness check: does the archive reach the recent tail?"""
+
+    subreddit: str
+    covered: bool
+    error: str = ""
+
+
+def probe_coverage(subreddits: list[str], within_hours: float,
+                   base_url: str = BASE_URL) -> list[CoverageProbe]:
+    """One cheap query per subreddit: any post newer than `within_hours` ago?
+
+    Measures archive LAG, keyword-free (fields=id, limit=1) — the
+    keyword-matched ingest result cannot distinguish "archive is behind" from
+    "nobody used the keyword", and routing on matched-item age would fire the
+    overlay forever on quiet topics. One throttled request per subreddit.
+    """
+    cutoff = _iso((datetime.now(timezone.utc) - timedelta(hours=within_hours)).timestamp())
+    client = ArcticShiftClient(base_url=base_url)
+    probes = []
+    try:
+        for sub in subreddits:
+            try:
+                data = client.search("posts", {
+                    "subreddit": sub, "limit": 1, "sort": "asc",
+                    "fields": "id", "after": cutoff,
+                })
+                probes.append(CoverageProbe(subreddit=sub, covered=bool(data)))
+            except Exception as e:
+                probes.append(CoverageProbe(subreddit=sub, covered=False,
+                                            error=e.__class__.__name__))
+    finally:
+        client.close()
+    return probes
