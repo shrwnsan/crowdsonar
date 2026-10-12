@@ -18,10 +18,12 @@ TOPIC CONFIG ──▶ INGEST ──▶ CLASSIFY ──▶ SYNTHESIZE ──▶ 
 
 ```
 crowdsonar --topic <name> [flags]
+crowdsonar doctor
 ```
 
-| Flag | What it does |
+| Command / flag | What it does |
 |------|--------------|
+| `doctor` | Health-check every backend (archive reachability, credentials, LLM endpoint, local store) — exit 1 if a required check fails |
 | `--topic`, `-t` | Topic config to run (from `src/crowdsonar/configs/` or `--config-dir`) |
 | `--list`, `-l` | List available topics |
 | *(default run)* | Full pipeline: ingest → classify → synthesize |
@@ -85,6 +87,18 @@ Managed via `pyproject.toml` (`pip install -e .`):
 
 DuckDB + Parquet. One `signals.parquet` per topic/run; DuckDB queries across them. Analytical, not transactional.
 
+## Provenance & Health
+
+Every row carries the backend it came from (`arctic` / `praw`), and every
+briefing ends with a deterministic ingest-mix line — e.g.
+`arctic (public archive) 94% · praw (real-time) 6%` — computed from the stored
+rows after synthesis, not by the model.
+
+`crowdsonar doctor` checks the full backend matrix before you depend on it:
+archive reachability + latency, Reddit credential validity, LLM endpoint auth,
+and local store writability. Exit code 1 on any required failure, so schedules
+can gate on it. Details: [docs/ingest.md](docs/ingest.md).
+
 ## Adding a Topic
 
 Point `--config-dir` at a directory of YAML files (or drop one into `src/crowdsonar/configs/`), then change the name, subreddits, keywords, and taxonomy. No code changes — the pipeline is config-driven.
@@ -93,15 +107,19 @@ Point `--config-dir` at a directory of YAML files (or drop one into `src/crowdso
 
 ```
 src/crowdsonar/
-  cli.py             # console entry point (ingest → classify → synthesize)
+  cli.py             # console entry point (ingest → classify → synthesize, doctor)
   config.py          # topic YAML loader (importlib.resources; --config-dir override)
   ingest.py          # PRAW ingestion (optional overlay)
   arctic_shift.py    # Arctic Shift API adapter (default source)
   classify.py        # LLM classification (signal type, sentiment, strength)
   storage.py         # DuckDB + Parquet signal store
-  synthesize.py      # briefing generation
+  synthesize.py      # briefing generation + ingest-mix provenance line
+  doctor.py          # backend health matrix (`crowdsonar doctor`)
   configs/           # bundled topic configs (example.yaml)
   prompts/           # classifier + synthesizer prompt templates (packaged data)
+docs/
+  ingest.md          # source tiers, health checks, provenance
+tests/               # contract tests (zero network)
 ```
 
 ## Status

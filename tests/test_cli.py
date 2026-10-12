@@ -1,8 +1,36 @@
-"""CLI helpers and end-to-end raw-store round trip (no LLM, no network)."""
+"""CLI helpers, argument parsing, and raw-store round trips (no LLM, no network)."""
 
-from crowdsonar.cli import _raw_row_to_post
+import pytest
+
+from crowdsonar.cli import _raw_row_to_post, parse_args
 from crowdsonar.ingest import RawPost
 from crowdsonar.storage import _raw_row_dict, save_raw_posts
+
+
+class TestArgParsing:
+    """The `doctor` positional must not change any pre-existing invocation."""
+
+    def test_topic_run(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["crowdsonar", "--topic", "x", "--dry-run"])
+        args = parse_args()
+        assert (args.command, args.topic, args.dry_run) == (None, "x", True)
+
+    def test_short_topic_flag(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["crowdsonar", "-t", "x"])
+        assert parse_args().topic == "x"
+
+    def test_list(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["crowdsonar", "--list"])
+        assert parse_args().list is True
+
+    def test_doctor_command(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["crowdsonar", "doctor"])
+        assert parse_args().command == "doctor"
+
+    def test_doctor_before_flags(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["crowdsonar", "doctor", "--topic", "x"])
+        args = parse_args()
+        assert (args.command, args.topic) == ("doctor", "x")
 
 
 def _post():

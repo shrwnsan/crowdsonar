@@ -1,9 +1,6 @@
 """Parquet store: raw dedupe, classification delta, signal queries."""
 
-from datetime import datetime, timezone
-
 import crowdsonar.storage as storage
-from crowdsonar.ingest import RawPost
 from crowdsonar.storage import (
     get_signal_counts,
     load_raw_posts,
@@ -12,42 +9,8 @@ from crowdsonar.storage import (
     save_raw_posts,
     save_signals,
 )
-
-
-def _post(source="arctic", post_id="1a", comment_id="", score=10):
-    return RawPost(
-        source=source,
-        post_id=post_id,
-        post_title="title",
-        post_url="https://reddit.com/r/s/comments/1a",
-        post_subreddit="s",
-        post_author="a",
-        post_score=score,
-        post_created_utc=1760000000.0,
-        post_body="body",
-        comment_id=comment_id,
-        comment_body="cbody" if comment_id else "",
-        comment_author="ca" if comment_id else "",
-        comment_score=score,
-        comment_created_utc=1760000000.0,
-        keyword_match="kw",
-    )
-
-
-def _signal_row(raw_dict, signal_type="product_launch"):
-    row = dict(raw_dict)
-    row.update({
-        "run_id": "run1",
-        "topic": "topic",
-        "signal_type": signal_type,
-        "sentiment": "positive",
-        "strength": "notable",
-        "confirmation_status": "self_announced",
-        "entities": '["Acme"]',
-        "summary": "Acme launched a thing",
-        "classified_at": datetime.now(timezone.utc).isoformat(),
-    })
-    return row
+from helpers import make_post as _post
+from helpers import make_signal_row as _signal_row
 
 
 class TestRawStore:
@@ -80,6 +43,35 @@ class TestClassificationDelta:
 
         save_signals([_signal_row(p) for p in pending], "topic", "run1")
         assert pending_classifications("topic") == []
+
+    def test_cross_source_twins_classified_once(self, data_dir):
+        """Archive outage banks a praw row; recovery banks its arctic twin.
+
+        The item must classify exactly once — arctic twin preferred while
+        both are unclassified, and a praw-side classification satisfies the
+        arctic twin once it arrives.
+        """
+        save_raw_posts([_post(source="praw")], "topic", "run1")
+        save_raw_posts([_post(source="arctic")], "topic", "run2")
+
+        pending = pending_classifications("topic")
+        assert [p["source"] for p in pending] == ["arctic"], "arctic twin wins the slot"
+
+        save_signals([_signal_row(p) for p in pending], "topic", "run1")
+        assert pending_classifications("topic") == []
+
+    def test_praw_side_classification_satisfies_arctic_twin(self, data_dir):
+        save_raw_posts([_post(source="praw")], "topic", "run1")
+        classified = pending_classifications("topic")  # praw only — no twin yet
+        save_signals([_signal_row(p) for p in classified], "topic", "run1")
+
+        save_raw_posts([_post(source="arctic")], "topic", "run2")
+        assert pending_classifications("topic") == [], "item identity is (post_id, comment_id), not source"
+
+    def test_unrelated_items_still_independent(self, data_dir):
+        save_raw_posts([_post(post_id="1a")], "topic", "run1")
+        save_raw_posts([_post(post_id="1a", comment_id="c1")], "topic", "run2")
+        assert len(pending_classifications("topic")) == 2, "comment rows are distinct items"
 
 
 class TestSignalQueries:
