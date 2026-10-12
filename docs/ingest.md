@@ -26,14 +26,36 @@ how we use it:
 
 ## Tier 2 — official API overlay (PRAW, optional)
 
-`--source praw`, or the overlay half of `auto` when `REDDIT_CLIENT_ID` /
-`REDDIT_CLIENT_SECRET` are set.
+`--source praw` (forced), or the overlay under `auto` when the router asks for
+it and `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` are set.
 
 The official Reddit API gives real-time listing (the last hours, where archive
 coverage trails). It requires OAuth credentials and the API's terms price
 research-scale reads, so CrowdSonar treats it as an optional overlay, never the
-default path. Set the credentials and it activates automatically in `auto`;
-leave them unset and Tier 1 carries the run.
+default path.
+
+## Routing: what `--source auto` does
+
+`auto` is a freshness-aware chain, not a fixed composition:
+
+1. Ingest from the archive (Tier 1).
+2. Assess freshness: the age of the newest item, compared against
+   `sources.reddit.freshness_hours` (default 48).
+3. Decide:
+
+| Archive state | Overlay runs? | Why |
+|---|---|---|
+| Items fresh (newest within threshold) | **no** | credential-free run — the archive already covers the window |
+| Items stale (newest older than threshold) | yes | overlay tops up the recent tail the archive missed |
+| Window empty (no errors) | yes | overlay becomes the source |
+| Errored with zero items | yes | overlay becomes the fallback |
+
+The decision (and its reason) is logged every run, and each row's `source`
+column preserves which tier delivered it — the briefing's ingest-mix line is
+exactly this read-out. Health here means **data freshness**, not just
+reachability: the archive is the history tier, the overlay is the last-hours
+tier. The decision table lives in `router.py` as pure functions; the CLI wiring
+is deliberately thin.
 
 ## Tier 3 — session-based readers (documented, not shipped)
 
@@ -80,6 +102,4 @@ and every synthesized briefing ends with a deterministic ingest-mix line:
 ```
 
 The line is computed from the stored rows after the LLM call, so it can't be
-hallucinated by the model. Roadmap: freshness-aware source routing on top of
-the same provenance signal (archive covers history, the overlay covers the
-last hours — route accordingly, not statically).
+hallucinated by the model.

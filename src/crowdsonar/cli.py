@@ -28,6 +28,7 @@ from crowdsonar.ingest import (
 )
 from crowdsonar.arctic_shift import ingest_arctic
 from crowdsonar.classify import classify_batch
+from crowdsonar.router import DEFAULT_FRESHNESS_HOURS, assess, decide_overlay
 from crowdsonar.storage import (
     save_signals,
     save_raw_posts,
@@ -73,9 +74,10 @@ def parse_args():
     p.add_argument("--list", "-l", action="store_true", help="List available topics")
     p.add_argument("--dry-run", action="store_true", help="Ingest and persist the raw store, skip all LLM calls")
     p.add_argument("--source", choices=["auto", "arctic", "praw"], default="auto",
-                   help="Ingestion source: arctic = Arctic Shift API (credential-free, "
-                        "default); praw = Reddit OAuth only; auto = arctic + PRAW overlay "
-                        "when REDDIT_CLIENT_ID/SECRET are set")
+                   help="Ingestion source: arctic = Arctic Shift API only (credential-free); "
+                        "praw = Reddit OAuth only; auto (default) = freshness-aware router — "
+                        "arctic first, PRAW overlay only when the archive is stale, empty, "
+                        "or errored (threshold: sources.reddit.freshness_hours, default 48h)")
     p.add_argument("--backfill", action="store_true",
                    help="Widen the ingest window to backfill_days from the topic config "
                         "(one-off deep backfill; default window is time_filter)")
@@ -135,6 +137,7 @@ def main():
         backfill_days = reddit_cfg.get("backfill_days", 0) if args.backfill else 0
 
         # Arctic Shift — primary, credential-free
+        arctic_report = None
         if args.source in ("auto", "arctic"):
             label = f"window={backfill_days}d (backfill)" if backfill_days else \
                     f"time_filter={reddit_cfg.get('time_filter', 'week')}"
@@ -150,9 +153,22 @@ def main():
             all_posts.extend(arctic_result.posts)
             for e in arctic_result.errors:
                 log.warning("Arctic Shift: %s", e)
+            arctic_report = assess(arctic_result.posts, arctic_result.errors)
 
-        # PRAW — optional real-time overlay
-        if args.source in ("auto", "praw"):
+        # PRAW — real-time overlay, gated by the freshness router under `auto`.
+        # Raw-store dedupe keys on (source, post_id, comment_id), so overlay
+        # rows bank alongside archive rows; the CLI-level dedupe on
+        # (post_id, comment_id) keeps one item per post in this run's batch.
+        if args.source == "auto":
+            stale_after = float(reddit_cfg.get("freshness_hours", DEFAULT_FRESHNESS_HOURS))
+            decision = decide_overlay(arctic_report, stale_after)
+            log.info("Phase 1b: PRAW overlay — %s (%s)",
+                     "running" if decision.overlay else "SKIPPED", decision.reason)
+            run_overlay = decision.overlay
+        else:
+            run_overlay = args.source == "praw"
+
+        if run_overlay:
             client_id = os.environ.get("REDDIT_CLIENT_ID")
             client_secret = os.environ.get("REDDIT_CLIENT_SECRET")
             if client_id and client_secret:
@@ -177,6 +193,9 @@ def main():
             elif args.source == "praw":
                 log.error("--source praw requires REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET")
                 sys.exit(1)
+            elif args.source == "auto":
+                log.warning("PRAW overlay wanted (%s) but no REDDIT_CLIENT_ID/SECRET — "
+                            "continuing with archive data only", decision.reason)
             else:
                 log.info("No REDDIT_CLIENT_ID/SECRET — PRAW overlay skipped (Arctic Shift only)")
 

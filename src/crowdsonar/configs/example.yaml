@@ -23,6 +23,7 @@ sources:
     post_limit: 50
     comments_per_post: 20
     backfill_days: 365  # applied only with --backfill (one-off deep backfill)
+    freshness_hours: 48  # --source auto: PRAW overlay runs only when the archive's newest item is older than this
 
 # Classification taxonomy
 signal_types:

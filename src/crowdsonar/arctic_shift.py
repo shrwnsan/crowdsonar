@@ -68,7 +68,7 @@ class ArcticShiftClient:
         self._http.close()
 
     def search(self, kind: str, params: dict) -> list[dict]:
-        """GET /api/{kind}/search with 429 / query-timeout retry. Returns data list."""
+        """GET /api/{kind}/search with 429 / 422 / 5xx / query-timeout retry. Returns data list."""
         p = dict(params)
         path = f"/api/{kind}/search"
         for attempt in range(3):
@@ -86,6 +86,16 @@ class ArcticShiftClient:
                 reset = float(resp.headers.get("X-RateLimit-Reset") or 30)
                 log.warning("Arctic Shift: rate limited, sleeping %.0fs", min(reset, 120))
                 time.sleep(min(reset, 120))
+                continue
+            if resp.status_code == 422 or resp.status_code >= 500:
+                # Transient upstream blips (a 2026-09 outage 422'd every call
+                # for ~40 minutes, then cleared on its own): retry with
+                # backoff; the LAST attempt still raises so callers fail
+                # without silently treating it as an empty window.
+                if attempt == 2:
+                    resp.raise_for_status()
+                log.warning("Arctic Shift %s: HTTP %d (attempt %d/3)", path, resp.status_code, attempt + 1)
+                time.sleep(2 ** attempt)
                 continue
             resp.raise_for_status()
             body = resp.json()

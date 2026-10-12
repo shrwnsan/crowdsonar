@@ -181,3 +181,25 @@ class TestRetries:
 
         with pytest.raises(RuntimeError, match="bad params"):
             self._client(handler).search("posts", {})
+
+    def test_422_blip_recovers(self):
+        codes = iter([422, 422, 200])
+
+        def handler(request):
+            code = next(codes)
+            if code == 422:
+                return httpx.Response(422)
+            return httpx.Response(200, json={"data": [{"id": "1"}]})
+
+        assert self._client(handler).search("posts", {"limit": 10}) == [{"id": "1"}]
+
+    def test_5xx_exhausts_and_raises(self):
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            return httpx.Response(503)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            self._client(handler).search("posts", {})
+        assert calls["n"] == 3

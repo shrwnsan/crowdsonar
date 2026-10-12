@@ -28,7 +28,7 @@ crowdsonar doctor
 | `--list`, `-l` | List available topics |
 | *(default run)* | Full pipeline: ingest → classify → synthesize |
 | `--dry-run` | Ingest only — skip classification and synthesis |
-| `--source` | Ingestion source: `arctic` (default, credential-free), `praw`, or `auto` |
+| `--source` | `auto` (default) = freshness-aware router — archive first, PRAW overlay only when the archive is stale/empty/errored; `arctic` = archive only; `praw` = Reddit OAuth only |
 | `--backfill` | One-off deep backfill — widens the ingest window to `backfill_days` from the topic config |
 | `--classify-only` | Only classify already-stored data |
 | `--synthesize-only` | Only generate a briefing from classified data |
@@ -56,7 +56,7 @@ crowdsonar --list
 crowdsonar --topic example
 ```
 
-Default ingestion is the **Arctic Shift API** — unauthenticated, no Reddit credentials needed. PRAW real-time ingest activates automatically if `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` are set (or force it with `--source praw`).
+Default `--source auto` is a **freshness-aware router**: the Arctic Shift API (credential-free) runs first, and the PRAW real-time overlay is invoked only when the archive's newest item is older than the topic's `freshness_hours` (default 48h) — or when the archive is empty or errored. Fresh archive + no credentials is a fully functional zero-key run.
 
 Any OpenAI-compatible chat-completions endpoint works for classification and synthesis — point `OPENAI_BASE_URL` at Mistral, DeepSeek, OpenRouter, a local llama.cpp server, anything speaking the OpenAI protocol.
 
