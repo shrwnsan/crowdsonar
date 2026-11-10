@@ -14,6 +14,10 @@ log = logging.getLogger(__name__)
 PROMPT_DIR = resources.files("crowdsonar") / "prompts"
 
 
+class SynthesisError(RuntimeError):
+    """LLM synthesis failed — no briefing was produced (and none is persisted)."""
+
+
 def synthesize_briefing(
     topic: str,
  topic_cfg: dict,
@@ -62,6 +66,14 @@ def synthesize_briefing(
     top_n = topic_cfg.get("synthesis", {}).get("top_signals", 10)
     signal_items = signal_items[:top_n]
 
+    # Deterministic counts header — pure arithmetic over the stored signal
+    # window, NO model attribution in it.
+    counts_header = (
+        f"{len(signals)} classified → "
+        f"{len(signals) - len(actionable)} noise filtered → "
+        f"{len(signal_items)} shown"
+    )
+
     system_prompt = (PROMPT_DIR / "synthesize.md").read_text(encoding="utf-8")
 
     user_msg = json.dumps({
@@ -92,20 +104,31 @@ def synthesize_briefing(
                 # inside max_tokens — budget generously or content starves.
                 "reasoning_effort": "high",
                 "thinking": {"type": "enabled"},
-                "max_tokens": 16384,
+                "max_tokens": 8192,
             },
-            timeout=120,
+            # 120s was exceeded by legitimate high-effort reasoning once —
+            # the read timed out and the failure string briefly shipped as a
+            # briefing. 300s covers slow reasoning turns with headroom.
+            timeout=300,
         )
         resp.raise_for_status()
         briefing = resp.json()["choices"][0]["message"]["content"].strip()
         if not briefing:
-            # Empty content = backend produced no visible output (e.g. reasoning
-            # tokens consumed the token budget). Never return "" — a silent
-            # empty briefing gets persisted as a 0-byte file and renders as a
-            # body-less digest.
-            return "⚠️ Synthesis returned empty content — raise the token budget or lower reasoning_effort."
-        return briefing
+            # Empty content with HTTP 200 = reasoning-token starvation
+            # (reasoning consumed max_tokens before any content was emitted).
+            # Failure is never content: raise instead of returning failure
+            # text — a returned string got persisted as a one-line poison
+# briefing file. Callers surface the error.
+            raise SynthesisError(
+                "synthesis returned empty content — reasoning-token starvation; "
+                "raise max_tokens or lower reasoning_effort"
+            )
+        # Counts header rides on top of the LLM prose — deterministic prefix,
+        # model-free, so the brief opens with the funnel numbers.
+        return f"{counts_header}\n\n{briefing}"
 
+    except SynthesisError:
+        raise
     except Exception as e:
         log.error("Synthesis failed: %s", e)
-        return f"Synthesis failed: {e}"
+        raise SynthesisError(str(e)) from e
