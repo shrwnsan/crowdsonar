@@ -19,8 +19,10 @@ Comment recovery mirrors PRAW: for each keyword-matched post, fetch comments
 via `link_id`, sort by score locally, keep the top `comments_per_post`.
 
 Be polite: this is a free volunteer-run service. Requests are throttled below
-"a couple per second" (their stated safe zone); 429 and query-timeout get
-retried with backoff and a shrunk limit.
+"a couple per second" (their stated safe zone); 429, 422, 5xx and query-timeout
+get retried with backoff (and a shrunk limit on query-timeout). Transient
+upstream blips degrade to a short/empty page within a single call — only the
+final attempt surfaces an error, so per-run callers fail-open unchanged.
 """
 
 import logging
@@ -68,7 +70,7 @@ class ArcticShiftClient:
         self._http.close()
 
     def search(self, kind: str, params: dict) -> list[dict]:
-        """GET /api/{kind}/search with 429 / query-timeout retry. Returns data list."""
+        """GET /api/{kind}/search with 429 / 422 / 5xx / query-timeout retry. Returns data list."""
         p = dict(params)
         path = f"/api/{kind}/search"
         for attempt in range(3):
@@ -87,12 +89,24 @@ class ArcticShiftClient:
                 log.warning("Arctic Shift: rate limited, sleeping %.0fs", min(reset, 120))
                 time.sleep(min(reset, 120))
                 continue
+            if resp.status_code == 422 or resp.status_code >= 500:
+                # A ~40-min Arctic Shift blip once 422'd every tick
+                # (transient; the same request succeeded minutes later).
+                # Retry with backoff instead of failing the whole tick;
+                # the LAST attempt still raises so cursor-advancing callers
+                # (imfg-pulse) fail without advancing, unchanged.
+                if attempt == 2:
+                    resp.raise_for_status()
+                log.warning("Arctic Shift %s: HTTP %d (attempt %d/3)",
+                            path, resp.status_code, attempt + 1)
+                time.sleep(2 ** attempt)
+                continue
             resp.raise_for_status()
             body = resp.json()
             err = body.get("error")
             if err:
                 msg = str(err)
-                if "imeout" in msg:  # "Query timed out" / "Timeout. Maybe slow down a bit"
+                if "imeout" in msg or "imed out" in msg:  # "Timeout. Maybe slow down" / "Query timed out"
                     p = dict(p)
                     lim = p.get("limit", PAGE_SIZE)
                     # "auto" (comment search) has no numeric half — drop to 100.
